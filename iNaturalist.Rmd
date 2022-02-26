@@ -11,16 +11,12 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 librarian::shelf(
-  digest, dplyr, DT, glue, purrr, readr, stringr, tidyr)
+  digest, dplyr, DT, glue, purrr, readr, stringr, tidyr, keras)
 ```
 
 Apply deep learning and convnet techniques to a small subset of iNaturalist species imagery. These data were downloaded from the links provided at [github.com/visipedia/inat_comp:2021/](https://github.com/visipedia/inat_comp/tree/master/2021). This lab only draws from the Train Mini set of images.
 
-The first step is to move the images into directories for the variety of models. The `keras::flow_images_from_firectory()` expects the first argument `directory` to contain one subdirectory per class. Since we are building models for two species `spp2` (binary) and ten species `spp10` (multiclass), plus we want to have `train` (n=30) and `test` (n=10) images assigned to each, we want an appropriate directory structure.
-
-```{r}
-librarian::shelf(digest, dplyr, DT, glue, purrr, readr, stringr, tidyr)
-```
+The first step is to move the images into directories for the variety of models. The `keras::flow_images_from_firectory()` expects the first argument `directory` to contain one subdirectory per class. Since we are building models for two species `spp2` (binary) and ten species `spp10` (multiclass), plus we want to have `train` (n=30) and `test` (n=10) images assigned to each, we want an appropriate directory structure. 
 
 ```{r}
 # path to folder containing species directories of images
@@ -89,23 +85,389 @@ d %>%
 # system(glue("tree {dir_dest}"))
 ```
 
-# 2 Species (binary classification) - neural net
+```{r}
+base_dir_spp2 <- "~/inat/spp2"
 
+train_dir <- file.path(base_dir_spp2, "train")
+train_00733_dir <- file.path(train_dir, "00733_Animalia_Arthropoda_Insecta_Hymenoptera_Cynipidae_Cynips_douglasii")
+train_04918_dir <- file.path(train_dir, "04918_Animalia_Chordata_Reptilia_Squamata_Colubridae_Lampropeltis_californiae")
+
+validation_dir <- file.path(base_dir_spp2, "validation")
+validation_00733_dir <- file.path(validation_dir, "00733_Animalia_Arthropoda_Insecta_Hymenoptera_Cynipidae_Cynips_douglasii")
+validation_04918_dir <- file.path(validation_dir, "04918_Animalia_Chordata_Reptilia_Squamata_Colubridae_Lampropeltis_californiae")
+
+test_dir <- file.path(base_dir_spp2, "test")
+test_00733_dir <- file.path(test_dir, "00733_Animalia_Arthropoda_Insecta_Hymenoptera_Cynipidae_Cynips_douglasii")
+test_04918_dir <- file.path(test_dir, "04918_Animalia_Chordata_Reptilia_Squamata_Colubridae_Lampropeltis_californiae")
+```
+
+```{r}
+cat("total training 00733 images:", length(list.files(train_00733_dir)), "\n")
+cat("total training 04918 images:", length(list.files(train_04918_dir)), "\n")
+
+cat("total validation 00733 images:", length(list.files(validation_00733_dir)), "\n")
+cat("total validation 04918 images:", length(list.files(validation_04918_dir)), "\n")
+
+cat("total test 00733 images:", length(list.files(test_00733_dir)), "\n")
+cat("total test 04918 images:", length(list.files(test_04918_dir)), "\n")
+```
+### Pre-process the images to be a consistent shape first (2 species)
+see 5.2.4 Data preprocessing
+???...should you process all files for all 10 species up front or process the 2 spp separately from the 10 spp?
+```{r}
+# xxx...not sure what this code chunk does???
+# dir_models     <- here::here("data/dl")
+# 
+# datagen <- image_data_generator(rescale = 1/255)
+# batch_size <- 20
+# 
+# extract_features <- function(directory, sample_count) {
+#   
+#   features <- array(0, dim = c(sample_count, 4, 4, 512))  
+#   labels <- array(0, dim = c(sample_count))
+#   
+#   generator <- flow_images_from_directory(
+#     directory = directory,
+#     generator = datagen,
+#     target_size = c(150, 150),
+#     batch_size = batch_size,
+#     class_mode = "binary"
+#   )
+#   
+#   i <- 0
+#   while(TRUE) {
+#     batch <- generator_next(generator)
+#     inputs_batch <- batch[[1]]
+#     labels_batch <- batch[[2]]
+#     features_batch <- conv_base %>% predict(inputs_batch)
+#     
+#     index_range <- ((i * batch_size)+1):((i + 1) * batch_size)
+#     features[index_range,,,] <- features_batch
+#     labels[index_range] <- labels_batch
+#     
+#     i <- i + 1
+#     if (i * batch_size >= sample_count)
+#       # Note that because generators yield data indefinitely in a loop, 
+#       # you must break after every image has been seen once.
+#       break
+#   }
+#   
+#   list(
+#     features = features, 
+#     labels = labels
+#   )
+# }
+# 
+# train      <- extract_features(train_dir,      60)
+# validation <- extract_features(validation_dir, 20)
+# test       <- extract_features(test_dir,       20)
+```
+Data should be formatted into appropriately pre-processed floating point tensors before being fed into a network. Currently, the data sites on a drive as JPEG files, so the steps for getting it into our network are:
+- Read the picture files
+- decode the JPEG content to RBG grids of pixels
+- convert these into floating point tensors
+- rescale the pixel values (between 0 adn 255) to the [0, 1] intervale (neural networks prefer to deal with small input values).
+
+Keras includes the `image_generator()` function which can automatically turn image files on disk into batches of pre-processed tensors.
+```{r}
+# use image_data_generator to read images from directories
+# all images will be rescaled by 1/255
+train_datagen <- image_data_generator(rescale = 1/255)
+validation_datagen <- image_data_generator(rescale = 1/255)
+test_datagen <- image_data_generator(rescale = 1/255)
+
+train_generator <- flow_images_from_directory(
+  # This is the target directory
+  train_dir, # xxx...update this with correct directory
+  # This is the data generator
+  train_datagen,
+  # All images will be resized to 150x150
+  target_size = c(150, 150),
+  batch_size = 20,
+  # Since we use binary_crossentropy loss, we need binary labels
+  class_mode = "binary"
+)
+
+validation_generator <- flow_images_from_directory(
+  validation_dir,
+  validation_datagen,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+
+test_generator <- flow_images_from_directory(
+  test_dir,
+  test_datagen,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+```
+```{r}
+batch <- generator_next(train_generator)
+str(batch)
+```
+The generator yeilds batches of 150 x 150 RGB images (shape (20, 150, 150, 3)) and binary labels (shape(20)). There are 20 samples in each batch (the batch size).
+
+### Processing images fo 10 species 
+```{r}
+base_dir_spp10 <- "~/inat/spp10"
+
+train_dir_spp10 <- file.path(base_dir_spp10, "train")
+validation_dir_spp10 <- file.path(base_dir_spp10, "validation")
+test_dir_spp10 <- file.path(base_dir_spp10, "test")
+```
+
+```{r}
+# processing images for 10 species
+# dir_models     <- here::here("data/dl")
+# 
+# datagen <- image_data_generator(rescale = 1/255)
+# batch_size <- 20
+# 
+# extract_features <- function(directory, sample_count) {
+#   
+#   features <- array(0, dim = c(sample_count, 4, 4, 512))  
+#   labels <- array(0, dim = c(sample_count))
+#   
+#   generator <- flow_images_from_directory(
+#     directory = directory,
+#     generator = datagen,
+#     target_size = c(150, 150),
+#     batch_size = batch_size,
+#     class_mode = "binary"
+#   )
+#   
+#   i <- 0
+#   while(TRUE) {
+#     batch <- generator_next(generator)
+#     inputs_batch <- batch[[1]]
+#     labels_batch <- batch[[2]]
+#     features_batch <- conv_base %>% predict(inputs_batch)
+#     
+#     index_range <- ((i * batch_size)+1):((i + 1) * batch_size)
+#     features[index_range,,,] <- features_batch
+#     labels[index_range] <- labels_batch
+#     
+#     i <- i + 1
+#     if (i * batch_size >= sample_count)
+#       # Note that because generators yield data indefinitely in a loop, 
+#       # you must break after every image has been seen once.
+#       break
+#   }
+#   
+#   list(
+#     features = features, 
+#     labels = labels
+#   )
+# }
+# 
+# train_spp10      <- extract_features(train_dir_spp10,      60)
+# validation_spp10 <- extract_features(validation_dir_spp10, 20)
+# test_spp10       <- extract_features(test_dir_spp10,       20)
+```
+
+```{r}
+# use image_data_generator to read images from directories
+# all images will be rescaled by 1/255
+train_datagen_spp10 <- image_data_generator(rescale = 1/255)
+validation_datagen_spp10 <- image_data_generator(rescale = 1/255)
+test_datagen_spp10 <- image_data_generator(rescale = 1/255)
+
+train_generator_spp10 <- flow_images_from_directory(
+  # This is the target directory
+  train_dir_spp10, # xxx...update this with correct directory
+  # This is the data generator
+  train_datagen_spp10,
+  # All images will be resized to 150x150
+  target_size = c(150, 150),
+  batch_size = 20,
+  # Since we use binary_crossentropy loss, we need binary labels
+  class_mode = "binary"
+)
+
+validation_generator_spp10 <- flow_images_from_directory(
+  validation_dir_spp10,
+  validation_datagen_spp10,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+
+test_generator_spp10 <- flow_images_from_directory(
+  test_dir_spp10,
+  test_datagen_spp10,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+```
+
+Note: For binary-classification problems, you end the network with a single unit (a `Dense` layer of size 1) and a `sigmoid` activation. This unit will encode the probability that the network is looking at one class or the other.
+
+Note: see table 4.1 for a cheatsheet on what loss function to use in various situations
+```{r}
+library(kableExtra)
+
+activation_loss_function_table <- tibble::tribble(
+  ~problem_type, ~last_layer_activation, ~loss_function,
+  "binary classification", "sigmoid",  "binary_crossentropy",
+  "multiclass, single-label classification", "softmax", "categorical_crossentropy",
+  "multiclass, multilabel classification",  "sigmoid", "binary_crossentropy",
+  "regression to arbitrary values", "none", "mse",
+  "regression to values between 0 and 1", "sigmoid", "mae or binary_crossentropy")
+
+
+activation_loss_function_table %>% 
+  kable(col.names = c("Problem type", "Last-layer activation", "Loss function")) %>% 
+  kable_paper(full_width = FALSE) %>% 
+  row_spec(c(0), background = "lightgray")
+```
+
+# 2 Species (binary classification) - neural net
+```{r}
+# the model definition
+model1 <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% # xxx...should the input shape be changed???
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r}
+# compile the model
+model1 %>%  compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+```{r}
+# ???
+dir_models <- here::here("data/dl")
+dir.create(dir_models, recursive=T, showWarnings = F)
+mdl1_h5 <- file.path(dir_models, "2_spp_neural_net.h5")
+mdl1_history_rds <- file.path(dir_models, "2_spp_neural_net.rds")
+# check if already fitted and saved model
+if (!file.exists(mdl1_history_rds) | !file.exists(mdl1_h5)){
+  # fit model
+  history1 <- model1 %>% fit_generator(
+    train_generator,
+    steps_per_epoch = 100,
+    epochs = 30,
+    validation_data = validation_generator,
+    validation_steps = 50)
+  
+  # save fitted model and fitting history
+  history1 %>% saveRDS(mdl1_history_rds)
+  model1 %>% save_model_hdf5(mdl1_h5)
+} else{
+  # load previously fitted model
+  history1 <- readRDS(mdl1_history_rds)
+  model1   <- load_model_hdf5(mdl1_h5)
+}
+```
 ## accuracy metric and validation in the fitting process
+```{r}
+results1 <- model1 %>% evaluate(test_generator)
+results1
+```
 
 ## history plot.
+```{r}
+plot(history1)
+```
 
-## Evaluate loss and accuracy on  test model results. 
+After training a network, you can generate predictions for new data.
+```{r}
+model1 %>% predict(test_datagen[1:10,])
+```
+
+## Evaluate loss and accuracy on test model results. 
+
+Note: Over-fitting is a particular concern when you have few training samples. Often, 2,000 images is considered "few samples" so the 30 samples used in this example will definitely be prone to over-fitting.
 
 ## Compare standard neural network and convolutional neural network results
 
 # 2 Species (binary classification) - convolutional neural net
+draw from cat dog example (linked in assignment instructions)
+```{r}
+# convolutional neural net
 
+# Because this is a binary-classification problem, we end the network with a single unit (a layer_dense() of size 1) and a sigmoid activation. This unit will encode the probability that the network is looking at one class or the other. 
+model2 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "relu",
+                input_shape = c(150, 150, 3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 512, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r}
+summary(model2)
+```
+
+```{r}
+# for the compilation step, go with the RMSprop optimizer as usual. Since we ended the network with a single sigmoid unit, we will use binary crossentropy as our loss.
+model2 %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(learning_rate = 1e-4),
+  metrics = c("acc"))
+```
+
+```{r}
+# Fitting the model is generally the most time consuming computational process, so store a path to the model output and only run if not yet created.
+dir_models <- here::here("data/dl")
+dir.create(dir_models, recursive=T, showWarnings = F)
+mdl2_h5 <- file.path(dir_models, "2_spp_convolutional_neural_net.h5")
+mdl2_history_rds <- file.path(dir_models, "2_spp_convolutional_neural_net.rds")
+# check if already fitted and saved model
+if (!file.exists(mdl2_history_rds) | !file.exists(mdl2_h5)){
+  # fit model
+  history2 <- model2 %>% fit_generator(
+    train_generator,
+    steps_per_epoch = 100,
+    epochs = 30,
+    validation_data = validation_generator,
+    validation_steps = 50)
+  
+  # save fitted model and fitting history
+  history2 %>% saveRDS(mdl2_history_rds)
+  model2 %>% save_model_hdf5(mdl2_h5)
+} else{
+  # load previously fitted model
+  history2 <- readRDS(mdl2_history_rds)
+  model2   <- load_model_hdf5(mdl2_h5)
+}
+```
 ## accuracy metric and validation in the fitting process
+```{r}
+results2 <- model2 %>% evaluate(test_generator) 
+results2
+```
 
 ## history plot.
+Plot the loss and accuracy of the model over the training and validation data during training:
+```{r}
+plot(history2)
+```
+These plots are characteristic of overfitting. Our training accuracy increases over time, until it reaches nearly 100%, while our validation accuracy stalls at 70-72%. Our validation loss reaches its minimum after around 12 epochs then stalls, while the training loss keeps decreasing approximately linearly until it reaches nearly 0.
+
+Because we only have relatively few training samples (100), overfitting is going to be our number one concern. Techniques such as dropout, weight decay, and data augmentation can help mitigate overfitting.
+
+xxx...see cat dog example in assignment link if you want to try data_augmentation
 
 ## Evaluate loss and accuracy on  test model results. 
+
+
 
 ## Compare standard neural network and convolutional neural network results
 
@@ -119,15 +481,85 @@ d %>%
 
 ## Compare standard neural network and convolutional neural network results
 
-# 10 Species (multi-class classification) - neural net
+# 10 Species (multi-class classification) - convolutional neural net
+```{r}
+# convolutional neural net
 
+# Because this is a binary-classification problem, we end the network with a single unit (a layer_dense() of size 1) and a sigmoid activation. This unit will encode the probability that the network is looking at one class or the other. 
+model4 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "relu",
+                input_shape = c(150, 150, 3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 512, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r}
+summary(model4)
+```
+
+```{r}
+# for the compilation step, go with the RMSprop optimizer as usual. Since we ended the network with a single sigmoid unit, we will use binary crossentropy as our loss.
+model4 %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(learning_rate = 1e-4),
+  metrics = c("acc"))
+```
+
+```{r}
+# Fitting the model is generally the most time consuming computational process, so store a path to the model output and only run if not yet created.
+dir_models <- here::here("data/dl")
+dir.create(dir_models, recursive=T, showWarnings = F)
+mdl4_h5 <- file.path(dir_models, "10_spp_convolutional_neural_net.h5")
+mdl4_history_rds <- file.path(dir_models, "10_spp_convolutional_neural_net.rds")
+# check if already fitted and saved model
+if (!file.exists(mdl4_history_rds) | !file.exists(mdl4_h5)){
+  # fit model
+  history4 <- model4 %>% fit_generator(
+    train_generator_spp10,
+    steps_per_epoch = 100,
+    epochs = 30,
+    validation_data = validation_generator_spp10,
+    validation_steps = 50)
+  
+  # save fitted model and fitting history
+  history4 %>% saveRDS(mdl4_history_rds)
+  model4 %>% save_model_hdf5(mdl4_h5)
+} else{
+  # load previously fitted model
+  history4 <- readRDS(mdl4_history_rds)
+  model4   <- load_model_hdf5(mdl4_h5)
+}
+```
 ## accuracy metric and validation in the fitting process
+```{r}
+results4 <- model4 %>% evaluate(test_generator_spp10) 
+results4
+```
 
 ## history plot.
+Plot the loss and accuracy of the model over the training and validation data during training:
+```{r}
+plot(history4)
+```
+These plots are characteristic of overfitting. Our training accuracy increases over time, until it reaches nearly 100%, while our validation accuracy stalls at xxx. Our validation loss reaches its minimum after around 12 epochs then stalls, while the training loss keeps decreasing approximately linearly until it reaches nearly 0.
+
+Because we only have relatively few training samples (100), overfitting is going to be our number one concern. Techniques such as dropout, weight decay, and data augmentation can help mitigate overfitting.
+
+xxx...see cat dog example in assignment link if you want to try data_augmentation
 
 ## Evaluate loss and accuracy on  test model results. 
 
+
 ## Compare standard neural network and convolutional neural network results
+
 
 Your task is to apply your deep learning skills to build the following models:
 
