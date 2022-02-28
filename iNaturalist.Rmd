@@ -410,7 +410,6 @@ history3 <- model3 %>% fit(
 history3
 ```
 
-
 ## accuracy metric and validation in the fitting process
 xxx...don't confuse loss/accuracy for validation fitting vs test
 
